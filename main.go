@@ -8,15 +8,15 @@ import (
   "math/rand"
   "time"
   "log"
-  "bytes"
-  "strconv"
-  "io/ioutil"
   "net"
   "sync"
   "strings"
   "context"
   "io"
   "encoding/json"
+  "bytes"
+  "strconv"
+  "io/ioutil"
 )
 
 const ListeningPort = "8888"
@@ -42,9 +42,11 @@ var mainRoute config
 
 func main() {
   mainRoute = config{
+    ProxyErrorHandle: proxyError,
+    MaxLoopTry: 20,
     ConsecutiveErrorsToDisable: 3,
-    TimeToKeepDisabled: time.Second * 30,
-    TimeToVerifyDisabled: time.Second * 10,
+    TimeToKeepDisabled: time.Second * 90,
+    TimeToVerifyDisabled: time.Second * 30,
     Routes: []route{
       {
         Name: "blog",
@@ -60,17 +62,17 @@ func main() {
         },
         ProxyEnable: true,
         ProxyServers: []proxyUrl{
-/*          {
-            Name: "docker 1 - error",
-            Url: "http://localhost:2367",
+          {
+            Name: "docker 1 - ok",
+            Url: "http://localhost:2368",
           },
           {
             Name: "docker 2 - error",
             Url: "http://localhost:2367",
-          },*/
+          },
           {
-            Name: "docker 3 - ok",
-            Url: "http://localhost:2368",
+            Name: "docker 3 - error",
+            Url: "http://localhost:2367",
           },
         },
       },
@@ -119,6 +121,10 @@ func main() {
 }
 
 type config struct {
+
+  ProxyErrorHandle                http.HandlerFunc
+
+  MaxLoopTry                      int
   /*
   Quantidades de erros consecutivos para desabilitar uma rota do proxy.
   A ideia é que uma rota do proxy possa está dando erro temporário, assim, o código desabilita a rota por um tempo e
@@ -148,13 +154,7 @@ type config struct {
 func(el *config)Prepare(){
   for routesKey := range el.Routes{
     for urlKey := range el.Routes[ routesKey ].ProxyServers {
-      //el.Routes[ routesKey ].ProxyServers[ urlKey ].Busy = false
       el.Routes[ routesKey ].ProxyServers[ urlKey ].Enabled = true
-      //el.Routes[ routesKey ].ProxyServers[ urlKey ].UsedSuccessfully = 0
-      //el.Routes[ routesKey ].ProxyServers[ urlKey ].ErrorCounter = 0
-      //el.Routes[ routesKey ].ProxyServers[ urlKey ].ErrorConsecutiveCounter = 0
-      //el.Routes[ routesKey ].ProxyServers[ urlKey ].LastLoopError = false
-      //el.Routes[ routesKey ].ProxyServers[ urlKey ].TotalTime = time.Second * 0
     }
   }
 }
@@ -215,12 +215,6 @@ type proxyUrl struct {
   ErrorConsecutiveCounter int64                 `json:"errorConsecutiveCounter"`
 
   /*
-  Indica se a rota está ocupada.
-  A ideia é usar em containers na estrutura do servidor
-  */
-  Busy                    bool                  `json:"busy"`
-
-  /*
   Arquiva o tempo desabilitado para poder reabilitar por time out
   */
   DisabledSince           time.Time             `json:"-"`
@@ -229,38 +223,44 @@ type proxyUrl struct {
   Usado pelo código para evitar que uma rota fique em loop infinito
   */
   LastLoopError           bool                  `json:"lastLoopError"`
+
+  /*
+  Usado para indicar que a rota já foi usada
+  A ideia é escolher a próximo rota livre em vez de ficar repetindo
+  */
+  LastLoopOk              bool                  `json:"lastLoopOk"`
 }
 
 type route struct {
   /*
   Nome para o log e outras funções, deve ser único e começar com letra ou '_'
   */
-  Name                  string
+  Name                  string                  `json:"name"`
 
   /*
   Dados do domínio
   */
-  Domain                domain
+  Domain                domain                  `json:"domain"`
 
   /*
   [opcional] Dados do caminho dentro do domínio
   */
-  Path                  path
+  Path                  path                    `json:"path"`
 
   /*
   [opcional] Dado da aplicação local
   */
-  Handle                handle
+  Handle                handle                  `json:"handle"`
 
   /*
   Habilita a funcionalidade do proxy, caso contrário, será chamada a função handle
   */
-  ProxyEnable           bool
+  ProxyEnable           bool                    `json:"proxyEnable"`
 
   /*
   Lista de todas as URLs para os containers com a aplicação
   */
-  ProxyServers          []proxyUrl
+  ProxyServers          []proxyUrl              `json:"proxyServers"`
 
   /*
   [uso interno] Contador de próximo container
@@ -271,87 +271,67 @@ type domain struct {
   /*
   [opcional] sub domínio sem ponto final. Ex.: blog.domínio.com fica apenas blog
   */
-  SubDomain             string
+  SubDomain             string                  `json:"subDomain"`
 
   /*
   Domínio onde o sistema roda. Foi imaginado para ser textual, por isto, evite ip address
   */
-  Domain                string
+  Domain                string                  `json:"domain"`
 
   /*
   [opcional] Coloque apenas o número da porta, sem os ':'. Ex. :8080, fica apenas 8080
   */
-  Port                  string
+  Port                  string                  `json:"port"`
 
-  ExpReg                bool
+  ExpReg                bool                    `json:"expReg"`
 }
 type path struct {
   /*
   [opcional] Quando omitido, faz com que todo o subdomínio seja usado para a rota
   */
-  Path                  string
-  ExpReg                bool
+  Path                  string                  `json:"path"`
+  ExpReg                bool                    `json:"expReg"`
 }
 type handle struct {
-  Handle                http.HandlerFunc
+  /*
+  Nome da rota para manter organizado
+  */
+  Name                    string                `json:"name"`
+
+  /*
+  Tempo total de execução da rota.
+  A soma de todos os tempos de resposta
+  */
+  TotalTime               time.Duration         `json:"totalTime"`
+
+  /*
+  Quantidades de usos sem erro
+  */
+  UsedSuccessfully        int64                 `json:"usedSuccessfully"`
+
+  /*
+  Função a ser servida
+  */
+  Handle                http.HandlerFunc        `json:"-"`
 }
 
 func hello(w http.ResponseWriter, r *http.Request) {
   w.Write( []byte("Hello") )
 }
 
+func proxyError(w http.ResponseWriter, r *http.Request) {
+  w.Write( []byte("Há um erro insperado") )
+}
+
 func statistic(w http.ResponseWriter, r *http.Request) {
-  type dataOutProxySerer struct{
-    Url                     string                `json:"url"`
-    Name                    string                `json:"name"`
-    AverageTime             int                   `json:"averageTime"`
-    UsedSuccessfully        int64                 `json:"usedSuccessfully"`
-    Enabled                 bool                  `json:"enabled"`
-    ErrorCounter            int64                 `json:"errorCounter"`
-  }
-  type dataOut struct{
-    Name              string
-    ProxyServers      []dataOutProxySerer
-    Domain            domain
-    Path              path
-  }
 
-  var toJson = make( []dataOut, len( mainRoute.Routes ) )
-
-  for key, value := range mainRoute.Routes {
-
-    toJson[ key ] = dataOut{
-      Name: value.Name,
-      Domain: value.Domain,
-      Path: value.Path,
-    }
-
-    toJson[ key ].ProxyServers = make( []dataOutProxySerer, len( mainRoute.Routes[ key ].ProxyServers ) )
-
-    for proxyKey := range mainRoute.Routes[ key ].ProxyServers {
-      toJson[ key ].ProxyServers[ proxyKey ].Url = mainRoute.Routes[ key ].ProxyServers[ proxyKey ].Url
-      toJson[ key ].ProxyServers[ proxyKey ].Name = mainRoute.Routes[ key ].ProxyServers[ proxyKey ].Name
-      toJson[ key ].ProxyServers[ proxyKey ].UsedSuccessfully = mainRoute.Routes[ key ].ProxyServers[ proxyKey ].UsedSuccessfully
-      toJson[ key ].ProxyServers[ proxyKey ].Enabled = mainRoute.Routes[ key ].ProxyServers[ proxyKey ].Enabled
-      toJson[ key ].ProxyServers[ proxyKey ].ErrorCounter = mainRoute.Routes[ key ].ProxyServers[ proxyKey ].ErrorCounter
-      if mainRoute.Routes[ key ].ProxyServers[ proxyKey ].UsedSuccessfully == 0 {
-        toJson[ key ].ProxyServers[ proxyKey ].AverageTime = 0
-      } else {
-        toJson[ key ].ProxyServers[ proxyKey ].AverageTime = int( mainRoute.Routes[ key ].ProxyServers[ proxyKey ].TotalTime ) / int(mainRoute.Routes[ key ].ProxyServers[ proxyKey ].UsedSuccessfully) / 1000000
-      }
-    }
-
-
-  }
-
-  out, err := json.Marshal( toJson )
-
+  byteJSon, err := json.Marshal( mainRoute.Routes )
   if err != nil {
     w.Write( []byte( err.Error() ) )
     return
   }
-  w.Write( out )
 
+  w.Write( byteJSon )
 }
 
 func ProxyFunc(w http.ResponseWriter, r *http.Request) {
@@ -360,8 +340,10 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
 
   start := time.Now()
   var handleName string
-  defer timeMensure( start, handleName )
+  //defer timeMensure( start, handleName )
 
+
+  passRoute := false
   for keyRoute, route := range mainRoute.Routes {
 
     handleName = route.Name
@@ -375,69 +357,99 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
     }
 
     if route.Domain.ExpReg == true && route.Path.ExpReg == true {
-
+      passRoute = true
     } else if route.Domain.ExpReg == false && route.Path.ExpReg == true {
-
+      passRoute = true
     } else if route.Domain.ExpReg == true && route.Path.ExpReg == false {
-
+      passRoute = true
     } else if route.Domain.ExpReg == false && route.Path.ExpReg == false {
 
       if r.Host == route.Domain.SubDomain + route.Domain.Domain + route.Domain.Port && ( route.Path.Path == r.URL.Path || route.Path.Path == "" ) {
+        passRoute = true
 
         if route.ProxyEnable == false {
-          route.Handle.Handle(w, r)
-
+          mainRoute.Routes[ keyRoute ].Handle.Handle(w, r)
+          mainRoute.Routes[ keyRoute ].Handle.TotalTime += time.Since( start ) * time.Nanosecond
+          mainRoute.Routes[ keyRoute ].Handle.UsedSuccessfully += 1
+          timeMensure( start, handleName )
           return
         }
 
         loopCounter := 0
 
         for {
-
-
-          passBusy := false
           passEnabled := false
           keyUrlToUse := 0
           externalServerUrl := ""
-          externalServerName := ""
-          // procura por containers desocupados
+          passNextRoute := false
+          // Procura pela próxima rota para uso que esteja habilitada
           for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers{
-            if mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopError == true {
-              continue
-            }
-
-            if mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].Busy == false {
-              passBusy = true
-            }
-
-            if mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled == true {
+            if mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk == false && mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled == true && mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopError == false {
+              passNextRoute = true
               passEnabled = true
-            }
-
-            if passBusy == true && passEnabled == true {
+              mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = true
               keyUrlToUse = urlKey
               break
             }
           }
 
-          if passBusy == false && passEnabled == false {        // todos os servidores externos estão ocupados ou desabilitados
+          // A próxima rota não foi encontrada
+          if passNextRoute == false {
+            // Limpa todas as indicações de próxima rota
+            for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers{
+              mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = false
+            }
 
-          } else if passBusy == false && passEnabled == true {  // todos os servidores estão ocupados
+            // Procura por uma rota habilitada e que não houve um erro na tentativa anterior
+            for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers {
+              if mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled == true && mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopError == false {
+                mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = true
+                passEnabled = true
+                keyUrlToUse = urlKey
+                break
+              }
+            }
 
-          } else if passBusy == true && passEnabled == false {  // todos os servidores estão desabilitados
+            // Todas as rotas estão desabilitadas ou houveram erros na tentativa anterior
+            if passEnabled == false {
+              // fixme: Avisar Todas as rotas estão desabilitadas ou houveram erros na tentativa anterior
 
-          } else if passBusy == true && passEnabled == true {   // há servidores livres
+              // Desabilita a indicação de erro na etapa anterior
+              for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers {
+                mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopError = false
+              }
 
-            externalServerUrl  = mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Url
-            externalServerName = mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name
-
+              // Procura por uma rota habilitada mesmo que tenha tido erro na etapa anterior
+              // Uma rota desabilitada teve vários erros consecutivos, por isto, foi desabilitada temporariamente
+              for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers {
+                if mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled == true {
+                  mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = true
+                  passEnabled = true
+                  keyUrlToUse = urlKey
+                  break
+                }
+              }
+            }
           }
 
-          fmt.Printf("loading [ %v ]: %v\n", externalServerName, externalServerUrl)
+          // Todas as rotas estão desabilitada por erro
+          // Habilita todas as rotas e tenta novamente
+          if passEnabled == false {
+            for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers{
+              mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled = true
+            }
+
+            //fixme: aconteceu um erro grave, todas as rotas falharam com erros consecutivos e foram habilitadas a força para tentar de qualquer modo
+
+            loopCounter += 1
+            continue
+          }
+
+          externalServerUrl  = mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Url
 
           containerUrl, err := url.Parse(externalServerUrl)
           if err != nil {
-            //w.Write([]byte(err.Error()))
+            // fixme: Avisar que houve erro no parser
             loopCounter += 1
 
             mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorCounter += 1
@@ -445,21 +457,32 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
             mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].LastLoopError = true
 
             if mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter >= mainRoute.ConsecutiveErrorsToDisable {
+              //fixme: avisar que rota foi removida
               mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Enabled = false
               mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].DisabledSince = now
+            }
 
-              fmt.Printf( "[ %v ] foi desabilitado após %v erros.\n", mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name, mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter )
+            if loopCounter >= mainRoute.MaxLoopTry {
+              if mainRoute.ProxyErrorHandle != nil {
+                mainRoute.ProxyErrorHandle(w, r)
+              }
+              timeMensure( start, handleName )
+              return
             }
 
             continue
           }
 
-          transport := &transport{http.DefaultTransport, nil}
+          transport := &transport{
+            RoundTripper: http.DefaultTransport,
+            Error: nil,
+          }
           proxy := NewSingleHostReverseProxy(containerUrl)
           proxy.Transport = transport
           proxy.ServeHTTP(w, r)
 
           if transport.Error != nil {
+            // fixme: avisar que houve erro na leitura da rota
             loopCounter += 1
 
             mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorCounter += 1
@@ -467,11 +490,19 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
             mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].LastLoopError = true
 
             if mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter >= mainRoute.ConsecutiveErrorsToDisable {
+              //fixme: avisar que rota foi removida
               mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Enabled = false
               mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].DisabledSince = now
-
-              fmt.Printf( "[ %v ] foi desabilitado após %v erros.\n", mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name, mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter )
             }
+
+            if loopCounter >= mainRoute.MaxLoopTry {
+              if mainRoute.ProxyErrorHandle != nil {
+                mainRoute.ProxyErrorHandle(w, r)
+              }
+              timeMensure( start, handleName )
+              return
+            }
+
             continue
           }
 
@@ -486,13 +517,22 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
             mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrl ].LastLoopError = false
           }
 
+          timeMensure( start, handleName )
           return
         }
       }
     }
   }
 
-  return
+  // coloquei aqui só para pausar a simulação caso 404
+  if passRoute == false {
+    timeMensure( start, handleName )
+    return
+  } else {
+    timeMensure( start, handleName )
+    return
+  }
+
 
   /*cookie, _ := r.Cookie(sessionName)
   if cookie == nil {
@@ -557,9 +597,8 @@ func timeMensure( start time.Time, name string ) {
 
 type transport struct {
   http.RoundTripper
-  Error       error
+  Error           error
 }
-
 func (t *transport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
   resp, err = t.RoundTripper.RoundTrip(req)
   if err != nil {
