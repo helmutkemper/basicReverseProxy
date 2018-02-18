@@ -1,6 +1,7 @@
 package main
 
 import (
+  log "github.com/helmutkemper/seelog"
   "net/http"
   "net/url"
   "regexp"
@@ -15,10 +16,9 @@ import (
   "bytes"
   "strconv"
   "io/ioutil"
-
-  log "github.com/helmutkemper/seelog"
   "fmt"
   "os"
+  "errors"
 )
 
 const ListeningPort = "8888"
@@ -451,6 +451,49 @@ func(el *ProxyConfig)VerifyDisabled(){
   }
 }
 
+type MetaJSonOutStt struct{
+  TotalCount  int64               `json:"TotalCount"`
+  Error       string              `json:"Error"`
+}
+
+type JSonOutStt struct{
+  Meta              MetaJSonOutStt      `json:"Meta"`
+  Objects           interface{}         `json:"Objects"`
+  geoJSonHasOutput  bool                `json:"-"`
+}
+
+func( el *JSonOutStt ) ToOutput( totalCountAInt int64, errorAErr error, dataATfc interface{}, w ProxyResponseWriter ) {
+  var errorString = ""
+
+  w.Header().Set( "Content-Type", "application/json; charset=utf-8" )
+
+  if errorAErr != nil {
+    w.WriteHeader(http.StatusInternalServerError)
+    errorString = errorAErr.Error()
+    totalCountAInt = 0
+  } else {
+    w.WriteHeader(http.StatusOK)
+  }
+
+  el.Meta = MetaJSonOutStt{
+    Error: errorString,
+    TotalCount: totalCountAInt,
+  }
+
+  if errorAErr != nil {
+    el.Objects = []int{}
+  } else {
+    switch dataATfc.(type) {
+    default:
+      el.Objects = dataATfc
+    }
+  }
+
+  if err := json.NewEncoder( w ).Encode( el ); err != nil {
+    log.Warn( err )
+  }
+}
+
 /*
 {
     "name": "news",
@@ -478,6 +521,7 @@ func(el *ProxyConfig)VerifyDisabled(){
 */
 func proxyRoutAdd(w ProxyResponseWriter, r *ProxyRequest) {
   var newRoute route
+  var output = JSonOutStt{}
 
   if len(mainNewRoutes) != 0 {
     mainRoute.Routes = mainNewRoutes
@@ -486,23 +530,51 @@ func proxyRoutAdd(w ProxyResponseWriter, r *ProxyRequest) {
   err := json.NewDecoder(r.Body).Decode(&newRoute)
 
   if err != nil {
-    //fixme: sjonOut.Error
-    panic(err)
+    output.ToOutput(0, err, []int{}, w)
+    return
   }
 
-  // fixme: só pode adicionar proxy e deve verificar os dados
-  
-  mainRoute.Routes = append(mainRoute.Routes, newRoute)
-  //fixme: jsonOut.ok
+  if newRoute.ProxyEnable == false {
+    output.ToOutput(0, errors.New("this function only adds new routes that can be used in conjunction with the reverse proxy"), []int{}, w)
+    return
+  }
+
+  if len( newRoute.ProxyServers ) == 0 {
+    output.ToOutput(0, errors.New("this function must receive at least one route that can be used in conjunction with the reverse proxy"), []int{}, w)
+    return
+  }
+
+  for _, route := range newRoute.ProxyServers {
+    if route.Name == "" {
+      output.ToOutput(0, errors.New("every route must have a name assigned to it"), []int{}, w)
+      return
+    }
+
+    _, err := url.Parse(route.Url)
+    if err != nil {
+      output.ToOutput(0, errors.New("the route of name '" + route.Name + "' presented the following error: " + err.Error()), []int{}, w)
+      return
+    }
+  }
+
+  mainNewRoutes = append(mainRoute.Routes, newRoute)
+  output.ToOutput(int64( len( mainNewRoutes ) ), nil, mainNewRoutes, w)
 }
 
+/*
+{
+    "name": "name_of_route"
+}
+*/
 func proxyRoutRemove(w ProxyResponseWriter, r *ProxyRequest) {
   var newRoute route
+  var output = JSonOutStt{}
+
   err := json.NewDecoder(r.Body).Decode(&newRoute)
 
   if err != nil {
-    //fixme: sjonOut.Error
-    panic(err)
+    output.ToOutput(0, err, []int{}, w)
+    return
   }
 
   var i int
@@ -525,9 +597,10 @@ func proxyRoutRemove(w ProxyResponseWriter, r *ProxyRequest) {
   }
 
   if mainRoute.Routes[i].ProxyEnable == false {
-    // fixme: mensagem de erro. so pode remoer proxy data
+    output.ToOutput(0, errors.New("this function can only remove the routes used with the reverse proxy, not being able to remove other types of routes"), []int{}, w)
+    return
   }
-  
+
   b, e := json.Marshal(mainNewRoutes)
   if e != nil {
     w.Write([]byte(e.Error()))
@@ -535,7 +608,7 @@ func proxyRoutRemove(w ProxyResponseWriter, r *ProxyRequest) {
   }
   w.Write(b)
 
-  //fixme: jsonOut.ok
+  output.ToOutput(int64( len( mainNewRoutes ) ), nil, mainNewRoutes, w)
 }
 
 func hello(w ProxyResponseWriter, r *ProxyRequest) {
