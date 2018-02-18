@@ -5,7 +5,6 @@ import (
   "net/http"
   "net/url"
   "regexp"
-  "math/rand"
   "time"
   "net"
   "sync"
@@ -21,46 +20,44 @@ import (
   "errors"
 )
 
-const ListeningPort = "8888"
-//const sessionName = "SESSION_ID"
-const sessionUniqueIdLength = 30
-const attemptsBeforeError = 3
+var ProxyRootConfig ProxyConfig
+var ProxyNewRootConfig []ProxyRoute
 
-var sessionUniqueIdBase []string
-func init() {
-  sessionUniqueIdBase = []string{ "a" ,"b" ,"c" ,"d" ,"e" ,"f" ,"g" ,"h" ,"i" ,"j" ,"k" ,"l" ,"m" ,"n" ,"o" ,"p" ,"q" ,"r" ,"s" ,"t" ,"u" ,"v" ,"w" ,"x" ,"y" ,"z" ,"A" ,"B" ,"C" ,"D" ,"E" ,"F" ,"G" ,"H" ,"I" ,"J" ,"K" ,"L" ,"M" ,"N" ,"O" ,"P" ,"Q" ,"R" ,"S" ,"T" ,"U" ,"V" ,"W" ,"X" ,"Y" ,"Z" ,"0" ,"1" ,"2" ,"3" ,"4" ,"5" ,"6" ,"7" ,"8" ,"9" ,"0" ,"_", }
+func hello(w ProxyResponseWriter, r *ProxyRequest) {
+  w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+  w.Write( []byte( "controller: " ) )
+  w.Write( []byte( r.ExpRegMatches[ "controller" ] ) )
+  w.Write( []byte( "<br>" ) )
+
+  w.Write( []byte( "module: " ) )
+  w.Write( []byte( r.ExpRegMatches[ "module" ] ) )
+  w.Write( []byte( "<br>" ) )
+
+  w.Write( []byte( "site: " ) )
+  w.Write( []byte( r.ExpRegMatches[ "site" ] ) )
+  w.Write( []byte( "<br>" ) )
 }
-
-func sessionId() string {
-  ret := ""
-  for i := 0; i != sessionUniqueIdLength; i += 1 {
-    ret += sessionUniqueIdBase[ rand.Int() % len( sessionUniqueIdBase ) ]
-  }
-
-  return ret
-}
-
-var mainRoute ProxyConfig
-var mainNewRoutes []route
 
 func main() {
-  mainRoute = ProxyConfig{
-    ErrorHandle: proxyError,
-    NotFoundHandle: proxyNotFound,
+  ProxyRootConfig = ProxyConfig{
+    ListenAndServe: ":8080",
+    ErrorHandle: ProxyRootConfig.ProxyError,
+    NotFoundHandle: ProxyRootConfig.ProxyNotFound,
     MaxLoopTry: 20,
     ConsecutiveErrorsToDisable: 10,
     TimeToKeepDisabled: time.Second * 90,
     TimeToVerifyDisabled: time.Second * 30,
-    Routes: []route{
+    Routes: []ProxyRoute{
       {
         Name: "blog",
-        Domain: domain{
+        Domain: ProxyDomain{
           SubDomain: "blog",
           Domain: "localhost",
           Port: "8888",
         },
         ProxyEnable: true,
-        ProxyServers: []proxyUrl{
+        ProxyServers: []ProxyUrl{
           {
             Name: "docker 1 - ok",
             Url: "http://localhost:2368",
@@ -77,14 +74,14 @@ func main() {
       },
       {
         Name: "hello",
-        Domain: domain{
-          NotFoundHandle: proxyNotFound,
-          ErrorHandle: proxyError,
+        Domain: ProxyDomain{
+          NotFoundHandle: ProxyRootConfig.ProxyNotFound,
+          ErrorHandle: ProxyRootConfig.ProxyError,
           SubDomain: "",
           Domain: "localhost",
           Port: "8888",
         },
-        Path: path{
+        Path: ProxyPath{
           ExpReg: `^/(?P<controller>[a-z0-9-]+)/(?P<module>[a-z0-9-]+)/(?P<site>[a-z0-9]+.(htm|html))$`,
         },
         ProxyEnable: false,
@@ -94,73 +91,72 @@ func main() {
       },
       {
         Name: "addTest",
-        Domain: domain{
-          NotFoundHandle: proxyNotFound,
-          ErrorHandle: proxyError,
+        Domain: ProxyDomain{
+          NotFoundHandle: ProxyRootConfig.ProxyNotFound,
+          ErrorHandle: ProxyRootConfig.ProxyError,
           SubDomain: "",
           Domain: "localhost",
           Port: "8888",
         },
-        Path: path{
+        Path: ProxyPath{
           Path : "/add",
           Method: "POST",
           //ExpReg: `^/(?P<controller>[a-z0-9-]+)/(?P<module>[a-z0-9-]+)/(?P<site>[a-z0-9]+.(htm|html))$`,
         },
         ProxyEnable: false,
         Handle: handle{
-          Handle: proxyRoutAdd,
+          Handle: ProxyRootConfig.RouteAdd,
         },
       },
       {
         Name: "removeTest",
-        Domain: domain{
-          NotFoundHandle: proxyNotFound,
-          ErrorHandle: proxyError,
+        Domain: ProxyDomain{
+          NotFoundHandle: ProxyRootConfig.ProxyNotFound,
+          ErrorHandle: ProxyRootConfig.ProxyError,
           SubDomain: "",
           Domain: "localhost",
           Port: "8888",
         },
-        Path: path{
+        Path: ProxyPath{
           Path : "/remove",
           Method: "POST",
           //ExpReg: `^/(?P<controller>[a-z0-9-]+)/(?P<module>[a-z0-9-]+)/(?P<site>[a-z0-9]+.(htm|html))$`,
         },
         ProxyEnable: false,
         Handle: handle{
-          Handle: proxyRoutRemove,
+          Handle: ProxyRootConfig.RouteDelete,
         },
       },
       {
         Name: "panel",
-        Domain: domain{
-          NotFoundHandle: proxyNotFound,
-          ErrorHandle: proxyError,
+        Domain: ProxyDomain{
+          NotFoundHandle: ProxyRootConfig.ProxyNotFound,
+          ErrorHandle: ProxyRootConfig.ProxyError,
           SubDomain: "root",
           Domain: "localhost",
           Port: "8888",
         },
-        Path: path{
-          Path: "/statistic",
+        Path: ProxyPath{
+          Path: "/statistics",
           Method: "GET",
         },
         ProxyEnable: false,
         Handle: handle{
-          Handle: statistic,
+          Handle: ProxyRootConfig.ProxyStatistics,
         },
       },
     },
   }
-  mainRoute.Prepare()
-  go mainRoute.VerifyDisabled()
+  ProxyRootConfig.Prepare()
+  go ProxyRootConfig.VerifyDisabled()
 
-  // all other traffic pass on
   http.HandleFunc("/", ProxyFunc)
-  http.ListenAndServe(":"+ListeningPort, nil)
+  http.ListenAndServe(ProxyRootConfig.ListenAndServe, nil)
 }
 
 type ProxyHandlerFunc func(ProxyResponseWriter, *ProxyRequest)
 
-type proxyUrl struct {
+type ProxyUrl struct {
   /*
   Url da rota para o proxy
   */
@@ -187,6 +183,9 @@ type proxyUrl struct {
   */
   Enabled                         bool                    `json:"enabled"`
 
+  /*
+  Quando marcado true, a rotina que reabita ignora a rota e a mantém desabilitada
+  */
   Forever                         bool                    `json:"forever"`
 
   /*
@@ -216,7 +215,7 @@ type proxyUrl struct {
   LastLoopOk                      bool                    `json:"lastLoopOk"`
 }
 
-type route struct {
+type ProxyRoute struct {
   /*
   Nome para o log e outras funções, deve ser único e começar com letra ou '_'
   */
@@ -225,12 +224,12 @@ type route struct {
   /*
   Dados do domínio
   */
-  Domain                          domain                  `json:"domain"`
+  Domain                          ProxyDomain             `json:"domain"`
 
   /*
   [opcional] Dados do caminho dentro do domínio
   */
-  Path                            path                    `json:"path"`
+  Path                            ProxyPath                `json:"path"`
 
   /*
   [opcional] Dado da aplicação local
@@ -245,17 +244,18 @@ type route struct {
   /*
   Lista de todas as URLs para os containers com a aplicação
   */
-  ProxyServers                    []proxyUrl              `json:"proxyServers"`
+  ProxyServers                    []ProxyUrl              `json:"proxyServers"`
+}
+type ProxyDomain struct {
 
   /*
-  [uso interno] Contador de próximo container
+  Função de erro padrão para o domínio.
   */
-  //balanceCounter        int64
-}
-type domain struct {
-
   ErrorHandle                     ProxyHandlerFunc        `json:"-"`
 
+  /*
+  Função de page not found padrão para o domínio
+  */
   NotFoundHandle                  ProxyHandlerFunc        `json:"-"`
 
   /*
@@ -273,16 +273,24 @@ type domain struct {
   */
   Port                            string                  `json:"port"`
 }
-type path struct {
+
+type ProxyPath struct {
   /*
   [opcional] Quando omitido, juntamente com ExpReg, faz com que todo o subdomínio seja usado para a rota
   */
   Path                            string                  `json:"path"`
 
+  /*
+  [opcional] Método da chamada GET/POST/DELETE...
+  */
   Method                          string                  `json:"method"`
 
+  /*
+  true faz com que o path seja checado por expressão regular
+  */
   ExpReg                          string                  `json:"expReg"`
 }
+
 type handle struct {
   /*
   Nome da rota para manter organizado
@@ -306,16 +314,56 @@ type handle struct {
   Handle                          ProxyHandlerFunc        `json:"-"`
 }
 
-type ProxyConfig struct {
+type ProxyRsaStt struct {
+  PublicKey                       string                  `bson:"publicKeyPath"`
+  PublicPen                       string                  `bson:"publicPenPath"`
+  PrivateKey                      string                  `bson:"privateKeyPath"`
+  PrivatePen                      string                  `bson:"privatePenPath"`
+  BitSize                         int                     `bson:"bitSize"`
+}
 
+type ProxyConfig struct {
+  /*
+  Configuração do seelog
+  @see https://github.com/cihub/seelog
+  */
   SeeLogConfig                    string                  `json:"seeLogConfig"`
 
+  /*
+  Configuração das chaves {{incompleto!}}
+  */
+  Rsa                             ProxyRsaStt             `json:"rsa"`
+
+  /*
+  Expressão regular que identifica o domínio do site
+  */
   DomainExpReg                    string                  `json:"domainExpReg"`
 
+  /*
+  Função de erro genérica, caso a função do domínio não seja definida
+  */
   ErrorHandle                     ProxyHandlerFunc        `json:"-"`
+  
+  /*
+  Função de page not found genérica, caso a função do domínio não seja definida
+  */
   NotFoundHandle                  ProxyHandlerFunc        `json:"-"`
 
+  /*
+  Tamanho de caracteres do token de segurança
+  */
+  UniqueIdLength                  int                     `json:"uniqueIdLength"`
+
+  /*
+  URL do servidor principal
+  */
+  ListenAndServe                  string                  `json:"listenAndServe"`
+
+  /*
+  Quantidade máxima de loop quando todas as rotas do proxy falham
+  */
   MaxLoopTry                      int
+  
   /*
   Quantidades de erros consecutivos para desabilitar uma rota do proxy.
   A ideia é que uma rota do proxy possa está dando erro temporário, assim, o código desabilita a rota por um tempo e
@@ -338,29 +386,152 @@ type ProxyConfig struct {
   /*
   Rotas do servidor proxy
   */
-  Routes                          []route
+  Routes                          []ProxyRoute
 }
 
-func(el *ProxyConfig)RouteAdd(){
+/*
+Esta função adiciona novas rotas ao proxy
+{
+    "name": "news",
+    "domain": {
+      "subDomain": "news",
+      "domain": "localhost",
+      "port": "8888"
+    },
+    "proxyEnable": true,
+    "proxyServers": [
+    {
+          "name": "docker 1 - ok",
+          "url": "http://localhost:2368"
+    },
+    {
+          "name": "docker 2 - ok",
+          "url": "http://localhost:2368"
+    },
+    {
+      "name": "docker 3 - ok",
+          "url": "http://localhost:2368"
+    }
+  ]
+}
+*/
+func(el *ProxyConfig)RouteAdd(w ProxyResponseWriter, r *ProxyRequest) {
+  // Esta função coloca a rota nova em 'ProxyNewRootConfig' e espera uma nova chamada em uma rota qualquer para que a 
+  // nova rota tenha efeito. Isso é transparente para o usuário final, mas, a rota não pode entrar em vigor durante o
+  // processamento da rota anterior, ou o sistema trava, devido a mudança dos 'ponteiros'
+  
+  var newRoute ProxyRoute
+  var output = JSonOutStt{}
 
+  if len(ProxyNewRootConfig) != 0 {
+    ProxyRootConfig.Routes = ProxyNewRootConfig
+  }
+
+  err := json.NewDecoder(r.Body).Decode(&newRoute)
+
+  if err != nil {
+    output.ToOutput(0, err, []int{}, w)
+    return
+  }
+
+  if newRoute.ProxyEnable == false {
+    output.ToOutput(0, errors.New("this function only adds new routes that can be used in conjunction with the reverse proxy"), []int{}, w)
+    return
+  }
+
+  if len( newRoute.ProxyServers ) == 0 {
+    output.ToOutput(0, errors.New("this function must receive at least one route that can be used in conjunction with the reverse proxy"), []int{}, w)
+    return
+  }
+
+  for _, route := range newRoute.ProxyServers {
+    if route.Name == "" {
+      output.ToOutput(0, errors.New("every route must have a name assigned to it"), []int{}, w)
+      return
+    }
+
+    _, err := url.Parse(route.Url)
+    if err != nil {
+      output.ToOutput(0, errors.New("the route of name '" + route.Name + "' presented the following error: " + err.Error()), []int{}, w)
+      return
+    }
+  }
+
+  // Habilita todas as rotas, pois, o padrão do go é false
+  for urlKey := range newRoute.ProxyServers {
+    newRoute.ProxyServers[ urlKey ].Enabled = true
+  }
+  
+  ProxyNewRootConfig = append(ProxyRootConfig.Routes, newRoute)
+  output.ToOutput(int64( len( ProxyNewRootConfig ) ), nil, ProxyNewRootConfig, w)
 }
 
-func(el *ProxyConfig)RouteChange(){
-
+/*
+Esta função elimina rotas do proxy
+{
+    "name": "name_of_route"
 }
+*/
+func(el *ProxyConfig)RouteDelete(w ProxyResponseWriter, r *ProxyRequest) {
+  // Esta função coloca a rota nova em 'ProxyNewRootConfig' e espera uma nova chamada em uma rota qualquer para que a 
+  // nova rota tenha efeito. Isso é transparente para o usuário final, mas, a rota não pode entrar em vigor durante o
+  // processamento da rota anterior, ou o sistema trava, devido a mudança dos 'ponteiros'
 
-func(el *ProxyConfig)RouteDelete(){
+  var newRoute ProxyRoute
+  var output = JSonOutStt{}
 
+  err := json.NewDecoder(r.Body).Decode(&newRoute)
+
+  if err != nil {
+    output.ToOutput(0, err, []int{}, w)
+    return
+  }
+
+  var i int
+  nameFound := false
+  for i = 0; i != len( ProxyRootConfig.Routes ); i += 1 {
+    if ProxyRootConfig.Routes[i].Name == newRoute.Name {
+      nameFound = true
+      break
+    }
+  }
+
+  if nameFound == true {
+    if i == 0 {
+      ProxyNewRootConfig = ProxyRootConfig.Routes[1:]
+    } else if i == len(ProxyRootConfig.Routes) - 1 {
+      ProxyNewRootConfig = ProxyRootConfig.Routes[:len(ProxyRootConfig.Routes)-1]
+    } else {
+      ProxyNewRootConfig = append( ProxyRootConfig.Routes[0:i], ProxyRootConfig.Routes[i+1:]... )
+    }
+  }
+
+  if ProxyRootConfig.Routes[i].ProxyEnable == false {
+    output.ToOutput(0, errors.New("this function can only remove the routes used with the reverse proxy, not being able to remove other types of routes"), []int{}, w)
+    return
+  }
+
+  b, e := json.Marshal(ProxyNewRootConfig)
+  if e != nil {
+    w.Write([]byte(e.Error()))
+    return
+  }
+  w.Write(b)
+
+  output.ToOutput(int64( len( ProxyNewRootConfig ) ), nil, ProxyNewRootConfig, w)
 }
 
 // Inicializa algumas variáveis
 func(el *ProxyConfig)Prepare(){
 
+  // Cria a pasta de log
   logPath := "./log"
   if _, err := os.Stat( logPath ); os.IsNotExist( err ) {
     err = os.Mkdir( logPath, 0777 )
   }
 
+  // Configura o log como arquivos com tamanho limitado. Um arquivo, info.log para coisas simples e um arquivo warn.log
+  // para coisas que devem ser observadas pelo administrador
   if el.SeeLogConfig == "" {
     el.SeeLogConfig = `<seelog minlevel="warn" maxlevel="critical" type="sync">
   <outputs formatid="all">
@@ -398,39 +569,60 @@ func(el *ProxyConfig)Prepare(){
   }
   log.UseLogger(logger)
 
+  // Define o tamanho do token como sendo 30 caracteres
+  if el.UniqueIdLength == 0 {
+    el.UniqueIdLength = 30
+  }
+
+  // Expressão regular do domínio
   if el.DomainExpReg == "" {
     el.DomainExpReg = `^(?P<subDomain>[a-zA-Z0-9]??|[a-zA-Z0-9]?[a-zA-Z0-9-.]*?[a-zA-Z0-9]*)[.]*(?P<domain>[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]):*(?P<port>[0-9]*)$`
   }
 
+  // Após 20 tentativas de acessar todos os containers da rota, uma mensagem de erro é exibida
   if el.MaxLoopTry == 0 {
     el.MaxLoopTry = 20
   }
 
+  // Caso um container apresente mais de 10 erros consecutivos, o mesmo é desabilitado
   if el.ConsecutiveErrorsToDisable == 0 {
     el.ConsecutiveErrorsToDisable = 10
   }
 
+  // Deixa um container desabilitado por 90 segundos após vários erros consecutivos
   if el.TimeToKeepDisabled == 0 {
     el.TimeToKeepDisabled = time.Second * 90
   }
 
+  // Faz um teste a cada 30 segundos para saber se há containers desabilitados além do tempo
   if el.TimeToVerifyDisabled == 0 {
     el.TimeToVerifyDisabled = time.Second * 30
   }
 
+  // Função de erro padrão do sistema
   if el.ErrorHandle == nil {
-    el.ErrorHandle = proxyError
+    el.ErrorHandle = el.ProxyError
   }
 
+  // Função de page not found padrão do sistema
   if el.NotFoundHandle == nil {
-    el.NotFoundHandle = proxyNotFound
+    el.NotFoundHandle = el.ProxyNotFound
   }
 
+  // Habilita todas as rotas do proxy, pois, o padrão do go é false
   for routesKey := range el.Routes{
     for urlKey := range el.Routes[ routesKey ].ProxyServers {
       el.Routes[ routesKey ].ProxyServers[ urlKey ].Enabled = true
     }
   }
+}
+
+func(el *ProxyConfig)ProxyError(w ProxyResponseWriter, r *ProxyRequest) {
+  w.Write( []byte( `<html><header><style>body{height:100%; position:relative}div{margin:auto;height: 100%;width: 100%;position:fixed;top:0;bottom:0;left:0;right:0;background:blue;}div.center{margin:auto;height: 70%;width: 70%;}</style></header><body><div><div style="color:#ffff;" class="center"><p style="text-align: center; background-color: #888888;">There is something very wrong!</p><p>&nbsp;</p>The address is correct, but no server has responded correctly. The system administrator will be informed about this.<p>&nbsp;</p>Mussum Ipsum, cacilds vidis litro abertis. Interagi no mé, cursus quis, vehicula ac nisi. Viva Forevis aptent taciti sociosqu ad litora torquent. Atirei o pau no gatis, per gatis num morreus. Quem num gosta di mim que vai caçá sua turmis!</div></div></body></html>` ) )
+}
+
+func(el *ProxyConfig)ProxyNotFound(w ProxyResponseWriter, r *ProxyRequest) {
+  w.Write( []byte( `<html><header><style>body{height:100%; position:relative}div{margin:auto;height: 100%;width: 100%;position:fixed;top:0;bottom:0;left:0;right:0;background:blue;}div.center{margin:auto;height: 70%;width: 70%;}</style></header><body><div><div style="color:#ffff;" class="center"><p style="text-align: center; background-color: #888888;">Page Not Found!</p><p>&nbsp;</p>Mussum Ipsum, cacilds vidis litro abertis. Interagi no mé, cursus quis, vehicula ac nisi. Viva Forevis aptent taciti sociosqu ad litora torquent. Atirei o pau no gatis, per gatis num morreus. Quem num gosta di mim que vai caçá sua turmis!<p>&nbsp;</p>Mussum Ipsum, cacilds vidis litro abertis. Interagi no mé, cursus quis, vehicula ac nisi. Viva Forevis aptent taciti sociosqu ad litora torquent. Atirei o pau no gatis, per gatis num morreus. Quem num gosta di mim que vai caçá sua turmis!</div></div></body></html>` ) )
 }
 
 // Verifica se há urls do proxy desabilitadas e as habilita depois de um tempo
@@ -449,6 +641,17 @@ func(el *ProxyConfig)VerifyDisabled(){
 
     time.Sleep(el.TimeToVerifyDisabled)
   }
+}
+
+func(el *ProxyConfig)ProxyStatistics(w ProxyResponseWriter, r *ProxyRequest) {
+
+  byteJSon, err := json.Marshal( ProxyRootConfig.Routes )
+  if err != nil {
+    w.Write( []byte( err.Error() ) )
+    return
+  }
+
+  w.Write( byteJSon )
 }
 
 type MetaJSonOutStt struct{
@@ -494,158 +697,6 @@ func( el *JSonOutStt ) ToOutput( totalCountAInt int64, errorAErr error, dataATfc
   }
 }
 
-/*
-{
-    "name": "news",
-    "domain": {
-      "subDomain": "news",
-      "domain": "localhost",
-      "port": "8888"
-    },
-    "proxyEnable": true,
-    "proxyServers": [
-		{
-    	    "name": "docker 1 - ok",
-        	"url": "http://localhost:2368"
-		},
-		{
-    	    "name": "docker 2 - ok",
-        	"url": "http://localhost:2368"
-		},
-		{
-			"name": "docker 3 - ok",
-	        "url": "http://localhost:2368"
-		}
-	]
-}
-*/
-func proxyRoutAdd(w ProxyResponseWriter, r *ProxyRequest) {
-  var newRoute route
-  var output = JSonOutStt{}
-
-  if len(mainNewRoutes) != 0 {
-    mainRoute.Routes = mainNewRoutes
-  }
-
-  err := json.NewDecoder(r.Body).Decode(&newRoute)
-
-  if err != nil {
-    output.ToOutput(0, err, []int{}, w)
-    return
-  }
-
-  if newRoute.ProxyEnable == false {
-    output.ToOutput(0, errors.New("this function only adds new routes that can be used in conjunction with the reverse proxy"), []int{}, w)
-    return
-  }
-
-  if len( newRoute.ProxyServers ) == 0 {
-    output.ToOutput(0, errors.New("this function must receive at least one route that can be used in conjunction with the reverse proxy"), []int{}, w)
-    return
-  }
-
-  for _, route := range newRoute.ProxyServers {
-    if route.Name == "" {
-      output.ToOutput(0, errors.New("every route must have a name assigned to it"), []int{}, w)
-      return
-    }
-
-    _, err := url.Parse(route.Url)
-    if err != nil {
-      output.ToOutput(0, errors.New("the route of name '" + route.Name + "' presented the following error: " + err.Error()), []int{}, w)
-      return
-    }
-  }
-
-  mainNewRoutes = append(mainRoute.Routes, newRoute)
-  output.ToOutput(int64( len( mainNewRoutes ) ), nil, mainNewRoutes, w)
-}
-
-/*
-{
-    "name": "name_of_route"
-}
-*/
-func proxyRoutRemove(w ProxyResponseWriter, r *ProxyRequest) {
-  var newRoute route
-  var output = JSonOutStt{}
-
-  err := json.NewDecoder(r.Body).Decode(&newRoute)
-
-  if err != nil {
-    output.ToOutput(0, err, []int{}, w)
-    return
-  }
-
-  var i int
-  nameFound := false
-  for i = 0; i != len( mainRoute.Routes ); i += 1 {
-    if mainRoute.Routes[i].Name == newRoute.Name {
-      nameFound = true
-      break
-    }
-  }
-
-  if nameFound == true {
-    if i == 0 {
-      mainNewRoutes = mainRoute.Routes[1:]
-    } else if i == len(mainRoute.Routes) - 1 {
-      mainNewRoutes = mainRoute.Routes[:len(mainRoute.Routes)-1]
-    } else {
-      mainNewRoutes = append( mainRoute.Routes[0:i], mainRoute.Routes[i+1:]... )
-    }
-  }
-
-  if mainRoute.Routes[i].ProxyEnable == false {
-    output.ToOutput(0, errors.New("this function can only remove the routes used with the reverse proxy, not being able to remove other types of routes"), []int{}, w)
-    return
-  }
-
-  b, e := json.Marshal(mainNewRoutes)
-  if e != nil {
-    w.Write([]byte(e.Error()))
-    return
-  }
-  w.Write(b)
-
-  output.ToOutput(int64( len( mainNewRoutes ) ), nil, mainNewRoutes, w)
-}
-
-func hello(w ProxyResponseWriter, r *ProxyRequest) {
-  w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
-  w.Write( []byte( "controller: " ) )
-  w.Write( []byte( r.ExpRegMatches[ "controller" ] ) )
-  w.Write( []byte( "<br>" ) )
-
-  w.Write( []byte( "module: " ) )
-  w.Write( []byte( r.ExpRegMatches[ "module" ] ) )
-  w.Write( []byte( "<br>" ) )
-
-  w.Write( []byte( "site: " ) )
-  w.Write( []byte( r.ExpRegMatches[ "site" ] ) )
-  w.Write( []byte( "<br>" ) )
-}
-
-func proxyError(w ProxyResponseWriter, r *ProxyRequest) {
-  w.Write( []byte( `<html><header><style>body{height:100%; position:relative}div{margin:auto;height: 100%;width: 100%;position:fixed;top:0;bottom:0;left:0;right:0;background:blue;}div.center{margin:auto;height: 70%;width: 70%;}</style></header><body><div><div style="color:#ffff;" class="center"><p style="text-align: center; background-color: #888888;">There is something very wrong!</p><p>&nbsp;</p>The address is correct, but no server has responded correctly. The system administrator will be informed about this.<p>&nbsp;</p>Mussum Ipsum, cacilds vidis litro abertis. Interagi no mé, cursus quis, vehicula ac nisi. Viva Forevis aptent taciti sociosqu ad litora torquent. Atirei o pau no gatis, per gatis num morreus. Quem num gosta di mim que vai caçá sua turmis!</div></div></body></html>` ) )
-}
-
-func proxyNotFound(w ProxyResponseWriter, r *ProxyRequest) {
-  w.Write( []byte( `<html><header><style>body{height:100%; position:relative}div{margin:auto;height: 100%;width: 100%;position:fixed;top:0;bottom:0;left:0;right:0;background:blue;}div.center{margin:auto;height: 70%;width: 70%;}</style></header><body><div><div style="color:#ffff;" class="center"><p style="text-align: center; background-color: #888888;">Page Not Found!</p><p>&nbsp;</p>Mussum Ipsum, cacilds vidis litro abertis. Interagi no mé, cursus quis, vehicula ac nisi. Viva Forevis aptent taciti sociosqu ad litora torquent. Atirei o pau no gatis, per gatis num morreus. Quem num gosta di mim que vai caçá sua turmis!<p>&nbsp;</p>Mussum Ipsum, cacilds vidis litro abertis. Interagi no mé, cursus quis, vehicula ac nisi. Viva Forevis aptent taciti sociosqu ad litora torquent. Atirei o pau no gatis, per gatis num morreus. Quem num gosta di mim que vai caçá sua turmis!</div></div></body></html>` ) )
-}
-
-func statistic(w ProxyResponseWriter, r *ProxyRequest) {
-
-  byteJSon, err := json.Marshal( mainRoute.Routes )
-  if err != nil {
-    w.Write( []byte( err.Error() ) )
-    return
-  }
-
-  w.Write( byteJSon )
-}
-
 type ProxyResponseWriter struct {
   http.ResponseWriter
 }
@@ -662,9 +713,10 @@ type ProxyRequest struct {
 
 func ProxyFunc(w http.ResponseWriter, r *http.Request) {
 
-  if len( mainNewRoutes ) > 0 {
-    mainRoute.Routes = mainNewRoutes
-    mainNewRoutes = make([]route, 0)
+  // Espera uma nova chamada para que a nova rota tenha efeito
+  if len( ProxyNewRootConfig ) > 0 {
+    ProxyRootConfig.Routes = ProxyNewRootConfig
+    ProxyNewRootConfig = make([]ProxyRoute, 0)
   }
 
   var responseWriter = ProxyResponseWriter{
@@ -675,26 +727,31 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
     Request: r,
   }
 
+  // a ideia era ter mais controle sobre o relógio, mas, terminou ficando inacabada
   now := time.Now()
 
   start := time.Now()
 
   var handleName string
+  
+  //defer não funcionou direito
   //defer timeMensure( start, handleName )
 
   request.ExpRegMatches = make( map[string]string )
   queryString := make( map[string][]string )
-
-  matched, err := regexp.MatchString(mainRoute.DomainExpReg, r.Host)
+  
+  // Trata o domínio e o separa
+  // fixme: rever isto. isto é necessário? deixa o sistema mais lento
+  matched, err := regexp.MatchString(ProxyRootConfig.DomainExpReg, r.Host)
   if err != nil {
     // há um erro grave na expreg do domínio
-    log.Debugf( "The regular expression in charge of identifying the domain data has a serious error and the reverse proxy system can not continue. ExpReg: '/%v/' Error: %v", mainRoute.DomainExpReg, err.Error() )
+    log.Debugf( "The regular expression in charge of identifying the domain data has a serious error and the reverse proxy system can not continue. ExpReg: '/%v/' Error: %v", ProxyRootConfig.DomainExpReg, err.Error() )
     log.Criticalf( "The regular expression in charge of identifying the domain data has a serious error and the reverse proxy system can not continue. Error: %v", err.Error() )
     return
   }
 
   if matched == true {
-    re := regexp.MustCompile(mainRoute.DomainExpReg)
+    re := regexp.MustCompile(ProxyRootConfig.DomainExpReg)
 
     request.SubDomain = re.ReplaceAllString(r.Host,"${subDomain}")
     request.Domain = re.ReplaceAllString(r.Host, "${domain}")
@@ -705,6 +762,8 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
     return
   }
 
+  // trata a query string
+  // fixme: isto é necessário aqui? deixa o sistema mais lento
   queryString, err = url.ParseQuery(r.URL.RawQuery)
   if err != nil {
     // há um erro na query string
@@ -713,7 +772,8 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
 
   request.QueryString = queryString
 
-  for keyRoute, route := range mainRoute.Routes {
+  // Trata todas as rotas
+  for keyRoute, route := range ProxyRootConfig.Routes {
 
     handleName = route.Name
 
@@ -743,39 +803,24 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
           request.ExpRegMatches[v] = re.ReplaceAllString(r.URL.Path, `${`+v+`}`)
         }
 
-        if mainRoute.Routes[ keyRoute ].Handle.Handle != nil {
-          mainRoute.Routes[ keyRoute ].Handle.Handle(responseWriter, request)
-          mainRoute.Routes[ keyRoute ].Handle.TotalTime += time.Since( start ) * time.Nanosecond
-          mainRoute.Routes[ keyRoute ].Handle.UsedSuccessfully += 1
+        if ProxyRootConfig.Routes[ keyRoute ].Handle.Handle != nil {
+          ProxyRootConfig.Routes[ keyRoute ].Handle.Handle(responseWriter, request)
+          ProxyRootConfig.Routes[ keyRoute ].Handle.TotalTime += time.Since( start ) * time.Nanosecond
+          ProxyRootConfig.Routes[ keyRoute ].Handle.UsedSuccessfully += 1
           timeMensure( start, handleName )
           return
         }
 
       } else {
         continue
-        /*
-        // o path expreg não bateu
-        log.Infof( "The path that the user is trying to access does not match the regular expression path" )
-
-        if mainRoute.Routes[ keyRoute ].Domain.NotFoundHandle != nil {
-          mainRoute.Routes[ keyRoute ].Domain.NotFoundHandle(responseWriter, request)
-
-          // Página de erro do sistema
-        } else if mainRoute.NotFoundHandle != nil {
-          mainRoute.NotFoundHandle(responseWriter, request)
-        }
-
-        timeMensure( start, handleName )
-        return
-        */
       }
 
     } else if ( route.Path.Method == "" || route.Path.Method == r.Method ) && ( route.Path.Path == r.URL.Path || route.Path.Path == "" ) {
 
-      if mainRoute.Routes[ keyRoute ].Handle.Handle != nil {
-        mainRoute.Routes[ keyRoute ].Handle.Handle(responseWriter, request)
-        mainRoute.Routes[ keyRoute ].Handle.TotalTime += time.Since( start ) * time.Nanosecond
-        mainRoute.Routes[ keyRoute ].Handle.UsedSuccessfully += 1
+      if ProxyRootConfig.Routes[ keyRoute ].Handle.Handle != nil {
+        ProxyRootConfig.Routes[ keyRoute ].Handle.Handle(responseWriter, request)
+        ProxyRootConfig.Routes[ keyRoute ].Handle.TotalTime += time.Since( start ) * time.Nanosecond
+        ProxyRootConfig.Routes[ keyRoute ].Handle.UsedSuccessfully += 1
         timeMensure( start, handleName )
         return
       }
@@ -783,25 +828,12 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
     // O domínio foi encontrado, porém, o path dentro do domínio não
     } else {
       continue
-      /*
-      // Página não encontrada do domínio
-      if mainRoute.Routes[ keyRoute ].Domain.NotFoundHandle != nil {
-        mainRoute.Routes[ keyRoute ].Domain.NotFoundHandle(responseWriter, request)
-
-      // Página não encontrada do sistema
-      } else if mainRoute.NotFoundHandle != nil {
-        mainRoute.NotFoundHandle(responseWriter, request)
-      }
-
-      timeMensure( start, handleName )
-      return
-      */
     }
 
     if route.ProxyEnable == false {
-      mainRoute.Routes[ keyRoute ].Handle.Handle(responseWriter, request)
-      mainRoute.Routes[ keyRoute ].Handle.TotalTime += time.Since( start ) * time.Nanosecond
-      mainRoute.Routes[ keyRoute ].Handle.UsedSuccessfully += 1
+      ProxyRootConfig.Routes[ keyRoute ].Handle.Handle(responseWriter, request)
+      ProxyRootConfig.Routes[ keyRoute ].Handle.TotalTime += time.Since( start ) * time.Nanosecond
+      ProxyRootConfig.Routes[ keyRoute ].Handle.UsedSuccessfully += 1
       timeMensure( start, handleName )
       return
     }
@@ -814,11 +846,11 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
       externalServerUrl := ""
       passNextRoute := false
       // Procura pela próxima rota para uso que esteja habilitada
-      for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers{
-        if mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk == false && mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled == true && mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopError == false {
+      for urlKey := range ProxyRootConfig.Routes[ keyRoute ].ProxyServers{
+        if ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk == false && ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled == true && ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopError == false {
           passNextRoute = true
           passEnabled = true
-          mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = true
+          ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = true
           keyUrlToUse = urlKey
           break
         }
@@ -827,14 +859,14 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
       // A próxima rota não foi encontrada
       if passNextRoute == false {
         // Limpa todas as indicações de próxima rota
-        for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers{
-          mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = false
+        for urlKey := range ProxyRootConfig.Routes[ keyRoute ].ProxyServers{
+          ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = false
         }
 
         // Procura por uma rota habilitada e que não houve um erro na tentativa anterior
-        for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers {
-          if mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled == true && mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopError == false {
-            mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = true
+        for urlKey := range ProxyRootConfig.Routes[ keyRoute ].ProxyServers {
+          if ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled == true && ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopError == false {
+            ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = true
             passEnabled = true
             keyUrlToUse = urlKey
             break
@@ -848,15 +880,15 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
           log.Warnf( "All routes reported error on previous attempt or are disabled. Host: %v", r.Host )
 
           // Desabilita a indicação de erro na etapa anterior
-          for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers {
-            mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopError = false
+          for urlKey := range ProxyRootConfig.Routes[ keyRoute ].ProxyServers {
+            ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopError = false
           }
 
           // Procura por uma rota habilitada mesmo que tenha tido erro na etapa anterior
           // Uma rota desabilitada teve vários erros consecutivos, por isto, foi desabilitada temporariamente
-          for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers {
-            if mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled == true {
-              mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = true
+          for urlKey := range ProxyRootConfig.Routes[ keyRoute ].ProxyServers {
+            if ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled == true {
+              ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].LastLoopOk = true
               passEnabled = true
               keyUrlToUse = urlKey
               break
@@ -868,8 +900,8 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
       // Todas as rotas estão desabilitada por erro
       // Habilita todas as rotas e tenta novamente
       if passEnabled == false {
-        for urlKey := range mainRoute.Routes[ keyRoute ].ProxyServers{
-          mainRoute.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled = true
+        for urlKey := range ProxyRootConfig.Routes[ keyRoute ].ProxyServers{
+          ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ urlKey ].Enabled = true
         }
 
         //aconteceu um erro grave, todas as rotas falharam com erros consecutivos e foram habilitadas a força para tentar de qualquer modo
@@ -879,38 +911,38 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
         continue
       }
 
-      externalServerUrl  = mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Url
+      externalServerUrl  = ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Url
 
       containerUrl, err := url.Parse(externalServerUrl)
       if err != nil {
         // Avisar que houve erro no parser
-        log.Criticalf( "The route '%v - %v' of the domain '%v' is wrong. Error: %v", mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name, externalServerUrl, r.Host, err.Error() )
+        log.Criticalf( "The route '%v - %v' of the domain '%v' is wrong. Error: %v", ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name, externalServerUrl, r.Host, err.Error() )
         loopCounter += 1
 
-        mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorCounter += 1
-        mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter += 1
-        mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].LastLoopError = true
+        ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorCounter += 1
+        ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter += 1
+        ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].LastLoopError = true
 
-        if mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter >= mainRoute.ConsecutiveErrorsToDisable {
+        if ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter >= ProxyRootConfig.ConsecutiveErrorsToDisable {
 
           // avisar que rota foi removida
-          log.Criticalf( "The route '%v - %v' of the domain '%v' is wrong and has been disabled indefinitely until it is corrected by the admin.", mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name, externalServerUrl, r.Host )
+          log.Criticalf( "The route '%v - %v' of the domain '%v' is wrong and has been disabled indefinitely until it is corrected by the admin.", ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name, externalServerUrl, r.Host )
 
-          mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Enabled = false
-          mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Forever = true
-          mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].DisabledSince = now
+          ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Enabled = false
+          ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Forever = true
+          ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].DisabledSince = now
         }
 
         // Houveram erros excessivos e o processo foi abortado
-        if loopCounter >= mainRoute.MaxLoopTry {
+        if loopCounter >= ProxyRootConfig.MaxLoopTry {
 
           // Página de erro específica do domínio
-          if mainRoute.Routes[ keyRoute ].Domain.ErrorHandle != nil {
-            mainRoute.Routes[ keyRoute ].Domain.ErrorHandle(responseWriter, request)
+          if ProxyRootConfig.Routes[ keyRoute ].Domain.ErrorHandle != nil {
+            ProxyRootConfig.Routes[ keyRoute ].Domain.ErrorHandle(responseWriter, request)
 
           // Página de erro do sistema
-          } else if mainRoute.ErrorHandle != nil {
-            mainRoute.ErrorHandle(responseWriter, request)
+          } else if ProxyRootConfig.ErrorHandle != nil {
+            ProxyRootConfig.ErrorHandle(responseWriter, request)
           }
 
           timeMensure( start, handleName )
@@ -930,33 +962,33 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
 
       if transport.Error != nil {
         // avisar que houve erro na leitura da rota
-        log.Warnf( "The route '%v - %v' of the domain '%v' returned an error. Error: %v", mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name, externalServerUrl, r.Host, transport.Error.Error() )
+        log.Warnf( "The route '%v - %v' of the domain '%v' returned an error. Error: %v", ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name, externalServerUrl, r.Host, transport.Error.Error() )
         loopCounter += 1
 
-        mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorCounter += 1
-        mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter += 1
-        mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].LastLoopError = true
+        ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorCounter += 1
+        ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter += 1
+        ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].LastLoopError = true
 
-        if mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter >= mainRoute.ConsecutiveErrorsToDisable {
+        if ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter >= ProxyRootConfig.ConsecutiveErrorsToDisable {
           // avisar que rota foi removida
-          log.Warnf( "The route '%v - %v' of the domain '%v' returned many consecutive errors and was temporarily disabled.", mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name, externalServerUrl, r.Host )
+          log.Warnf( "The route '%v - %v' of the domain '%v' returned many consecutive errors and was temporarily disabled.", ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Name, externalServerUrl, r.Host )
 
-          mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Enabled = false
-          mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].DisabledSince = now
+          ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].Enabled = false
+          ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].DisabledSince = now
         }
 
         // Houveram erros excessivos e o processo foi abortado
-        if loopCounter >= mainRoute.MaxLoopTry {
+        if loopCounter >= ProxyRootConfig.MaxLoopTry {
 
-          log.Criticalf( "The '%v' domain returned more %v consecutive errors and the error page was displayed to the user.", r.Host, mainRoute.MaxLoopTry )
+          log.Criticalf( "The '%v' domain returned more %v consecutive errors and the error page was displayed to the user.", r.Host, ProxyRootConfig.MaxLoopTry )
 
           // Página de erro específica do domínio
-          if mainRoute.Routes[ keyRoute ].Domain.ErrorHandle != nil {
-            mainRoute.Routes[ keyRoute ].Domain.ErrorHandle(responseWriter, request)
+          if ProxyRootConfig.Routes[ keyRoute ].Domain.ErrorHandle != nil {
+            ProxyRootConfig.Routes[ keyRoute ].Domain.ErrorHandle(responseWriter, request)
 
           // Página de erro do sistema
-          } else if mainRoute.ErrorHandle != nil {
-            mainRoute.ErrorHandle(responseWriter, request)
+          } else if ProxyRootConfig.ErrorHandle != nil {
+            ProxyRootConfig.ErrorHandle(responseWriter, request)
           }
 
           timeMensure( start, handleName )
@@ -968,13 +1000,13 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
 
       // rodou sem erro
 
-      mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter = 0
-      mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].UsedSuccessfully += 1
-      mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].TotalTime += time.Since( start ) * time.Nanosecond
+      ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].ErrorConsecutiveCounter = 0
+      ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].UsedSuccessfully += 1
+      ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrlToUse ].TotalTime += time.Since( start ) * time.Nanosecond
 
       // LastLoopError evita um loop infinito em rotas com erro de resposta
-      for keyUrl := range mainRoute.Routes[ keyRoute ].ProxyServers{
-        mainRoute.Routes[ keyRoute ].ProxyServers[ keyUrl ].LastLoopError = false
+      for keyUrl := range ProxyRootConfig.Routes[ keyRoute ].ProxyServers{
+        ProxyRootConfig.Routes[ keyRoute ].ProxyServers[ keyUrl ].LastLoopError = false
       }
 
       timeMensure( start, handleName )
@@ -983,8 +1015,8 @@ func ProxyFunc(w http.ResponseWriter, r *http.Request) {
   }
 
   // nenhum domínio bateu e está é uma página 404 genérica?
-  if mainRoute.NotFoundHandle != nil {
-    mainRoute.NotFoundHandle(responseWriter, request)
+  if ProxyRootConfig.NotFoundHandle != nil {
+    ProxyRootConfig.NotFoundHandle(responseWriter, request)
   }
   timeMensure( start, handleName )
   return
